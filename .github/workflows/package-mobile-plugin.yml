@@ -1,0 +1,31 @@
+name: Package Mobile Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      asdk_app_id:
+        description: "Raw ChatGPT App ID (asdk_app_...)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build HackerOne-style mobile plugin
+        run: node scripts/build-mobile-plugin.mjs "${{ inputs.asdk_app_id }}"
+      - name: Create ZIP
+        run: |
+          cd dist
+          zip -r yeswehack-app-mobile.zip yeswehack-app-mobile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yeswehack-app-mobile
+          path: dist/yeswehack-app-mobile.zip
