@@ -7,6 +7,7 @@ import {
   normalizeScope,
   verifyCredential,
 } from "../../../src/oauth";
+import { loginYesWeHack } from "../../../src/ywhclient";
 
 export const runtime = "nodejs";
 export const preferredRegion = "iad1";
@@ -74,15 +75,19 @@ function authPage(fields: Fields, error = "") {
       '<main style="min-height:100vh;display:grid;place-items:center;padding:24px"><section style="width:min(560px,100%)">' +
       '<div style="color:#22c55e;font-weight:700;margin-bottom:12px">YESWEHACK MCP</div>' +
       '<h1 style="font-size:32px;margin:0 0 12px">Connect your YesWeHack account</h1>' +
-      '<p style="color:#bdbdbd;line-height:1.6">Paste a YesWeHack Personal Access Token (recommended) or current bearer token. It is verified directly against YesWeHack and stored server-side in Vercel Runtime Cache for this OAuth grant. ChatGPT receives an opaque token, not your YesWeHack credential.</p>' +
+      '<p style="color:#bdbdbd;line-height:1.6">Sign in with your normal YesWeHack hunter account. Your email/password are sent directly to YesWeHack to obtain a session token and are not stored. Only the resulting YesWeHack token is kept server-side for this OAuth grant.</p>' +
       errorHtml +
       '<form method="post" autocomplete="off">' +
       hidden +
-      '<label style="display:block;margin-bottom:8px">YesWeHack token</label>' +
-      '<input type="password" name="ywh_token" required autofocus spellcheck="false" autocomplete="off" style="box-sizing:border-box;width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#111;color:#fff;font:inherit">' +
+      '<label style="display:block;margin-bottom:8px">Email</label>' +
+      '<input type="email" name="email" required autofocus autocomplete="username" style="box-sizing:border-box;width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#111;color:#fff;font:inherit;margin-bottom:12px">' +
+      '<label style="display:block;margin-bottom:8px">Password</label>' +
+      '<input type="password" name="password" required autocomplete="current-password" style="box-sizing:border-box;width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#111;color:#fff;font:inherit;margin-bottom:12px">' +
+      '<label style="display:block;margin-bottom:8px">2FA code <span style="color:#666">(if enabled)</span></label>' +
+      '<input type="text" inputmode="numeric" pattern="[0-9]*" name="totp" autocomplete="one-time-code" style="box-sizing:border-box;width:100%;padding:14px;border-radius:10px;border:1px solid #333;background:#111;color:#fff;font:inherit">' +
       '<button type="submit" style="margin-top:16px;width:100%;padding:14px;border:0;border-radius:10px;background:#22c55e;color:#041008;font:inherit;font-weight:800;cursor:pointer">Verify &amp; authorize ChatGPT</button>' +
       "</form>" +
-      '<p style="margin-top:18px;color:#666;font-size:13px;line-height:1.5">This page does not save your token in GitHub or return it to ChatGPT.</p>' +
+      '<p style="margin-top:18px;color:#666;font-size:13px;line-height:1.5">Your password and 2FA code are not stored. They are used only for the YesWeHack login request. ChatGPT never receives them.</p>' +
       "</section></main></body></html>",
     {
       status: error ? 401 : 200,
@@ -122,15 +127,23 @@ export async function POST(request: Request) {
     return Response.json({ error: "invalid_request", error_description: error }, { status: 400 });
   }
 
-  const token = String(form.get("ywh_token") || "").trim();
-  if (!token) return authPage(fields, "Enter a YesWeHack token.");
+  const email = String(form.get("email") || "").trim();
+  const password = String(form.get("password") || "");
+  const totp = String(form.get("totp") || "").trim();
+  const directToken = String(form.get("ywh_token") || "").trim();
+
+  if ((!email || !password) && !directToken) {
+    return authPage(fields, "Enter your YesWeHack email and password.");
+  }
 
   try {
-    const identity = await verifyCredential(token);
+    const login = directToken
+      ? { token: directToken, ...(await verifyCredential(directToken)) }
+      : await loginYesWeHack(email, password, totp || undefined);
     const code = await createAuthorizationCode({
-      token,
-      username: identity.username,
-      email: identity.email,
+      token: login.token,
+      username: login.username,
+      email: login.email,
       clientId: fields.client_id,
       redirectUri: fields.redirect_uri,
       resource: fields.resource,
@@ -144,6 +157,9 @@ export async function POST(request: Request) {
     redirect.searchParams.set("iss", OAUTH_ISSUER);
     return Response.redirect(redirect.toString(), 302);
   } catch (error: any) {
-    return authPage(fields, error?.message || "YesWeHack rejected that token.");
+    if (error?.message === "TOTP_REQUIRED") {
+      return authPage(fields, "Your YesWeHack account requires a 2FA code. Enter email, password, and the current authenticator code.");
+    }
+    return authPage(fields, error?.message || "YesWeHack rejected that login.");
   }
 }
