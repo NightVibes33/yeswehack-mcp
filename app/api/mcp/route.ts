@@ -7,7 +7,6 @@ import {
   getProgramCredentials,
   getReport,
   listEmailAliases,
-  listProgramCredentials,
   listPrograms,
   listReportComments,
   listReports,
