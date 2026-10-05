@@ -92,6 +92,62 @@ export async function apiRequest(
   return body;
 }
 
+
+export async function loginYesWeHack(
+  email: string,
+  password: string,
+  otp?: string
+) {
+  const payload: Record<string, string> = { email, password };
+  if (otp?.trim()) payload.otp = otp.trim();
+
+  const response = await fetch(API_BASE + "/login", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+
+  const body = await parseResponse(response);
+  const needsOtp =
+    body &&
+    typeof body === "object" &&
+    Boolean((body as any).otp || (body as any).totp);
+
+  if (needsOtp) {
+    throw new Error("TOTP_REQUIRED");
+  }
+
+  if (!response.ok) {
+    const detail =
+      body && typeof body === "object"
+        ? ((body as any).message || (body as any).detail || "Invalid credentials.")
+        : String(body || response.statusText);
+    throw new YesWeHackApiError(
+      response.status,
+      response.status === 401
+        ? "YesWeHack rejected that email/password or TOTP."
+        : "YesWeHack login failed: " + detail,
+      body
+    );
+  }
+
+  const token =
+    body && typeof body === "object"
+      ? ((body as any).token || (body as any).access_token)
+      : null;
+
+  if (!token || typeof token !== "string") {
+    throw new Error("YesWeHack login succeeded but did not return an access token.");
+  }
+
+  const identity = await verifyYesWeHackToken(token);
+  return { token, ...identity };
+}
+
 export async function verifyYesWeHackToken(token: string) {
   const user = await apiRequest("GET", "/user", { token });
   return {
