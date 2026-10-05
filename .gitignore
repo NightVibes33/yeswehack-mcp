@@ -1,23 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-.venv/
-
-# uv
-.uv/
-
-# Token and browser profile (contains session data — never commit)
-~/.config/yeswehack-mcp/
-
-# Environment variables
+node_modules/
+.next/
+.vercel/
 .env
 .env.*
-
-# IDE
-.vscode/
-.idea/
-
-# OS
+!.env.example
+npm-debug.log*
 .DS_Store
-Thumbs.db

@@ -1,173 +1,113 @@
-# yeswehack-mcp
+# YesWeHack MCP Server
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for the [YesWeHack](https://yeswehack.com) bug bounty platform. Lets Claude query your private and public programs, reports, and the hacktivity feed directly from a conversation.
+Unofficial ChatGPT-compatible remote MCP server for the YesWeHack bug bounty platform.
 
-## Features
+## Production transport
 
-- **Flexible authentication** — browser login, email/password API login, copied bearer tokens, and official Personal Access Tokens.
-- **Private programs** — returns invite-only programs you have been accepted into, not just public ones.
-- **Full program details** — scope, reward ranges, status.
-- **Report access** — list and read reports with severity, CVSS, description, and bounty.
-- **Report comments** — list report discussion/messages when your account has access.
-- **Email aliases** — list your YesWeHack email aliases.
-- **Program credentials** — list credential pools/assigned credentials and request credentials for programs that expose pools.
-- **Hacktivity feed** — browse publicly disclosed reports.
-- **Token caching** — the JWT is stored locally and reused until it expires.
-
-## Requirements
-
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (installed automatically by the setup script if missing)
-- A YesWeHack account
-- **WSL2 users:** WSLg must be enabled so Chromium can open a window (`echo $DISPLAY` should return a value)
-
-## Installation
-
-```bash
-git clone https://github.com/youruser/yeswehack-mcp
-cd yeswehack-mcp
-
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install dependencies
-uv sync
-
-# Download the Chromium browser used for login
-uv run playwright install chromium
-```
-
-## Registering with Claude Code
-
-```bash
-claude mcp add yeswehack -- uv --directory /path/to/yeswehack-mcp run server.py
-```
-
-Replace `/path/to/yeswehack-mcp` with the actual path where you cloned the repo.
-
-Verify it connected:
-
-```bash
-claude mcp list
-# yeswehack: ... ✓ Connected
-```
-
-## Registering with Claude Desktop
-
-Add the following to your Claude Desktop config file:
-
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "yeswehack": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/path/to/yeswehack-mcp",
-        "run",
-        "server.py"
-      ]
-    }
-  }
-}
-```
-
-If `uv` is not on PATH when Claude Desktop launches, use the absolute path (e.g. `/home/youruser/.local/bin/uv`).
-
-## Usage
-
-Once registered, start every session by authenticating:
-
-> **You:** Call the authenticate tool
-
-With no arguments, a Chromium window opens. Log in to YesWeHack as normal (email + password + 2FA if enabled). The window closes automatically once your session is detected. The token is saved to `~/.config/yeswehack-mcp/token.json` and reused for all subsequent calls until it expires.
-
-You can also authenticate without a browser:
+After deployment, use:
 
 ```text
-authenticate(email="you@example.com", password="...", totp="123456")
-authenticate(access_token="eyJ...")        # browser/API bearer token
-authenticate(access_token="ywh_pat_...")   # Personal Access Token
+https://YOUR-PROJECT.vercel.app/api/mcp
 ```
 
-Environment variables are supported too:
+Health:
+
+```text
+https://YOUR-PROJECT.vercel.app/api/health
+```
+
+## ChatGPT / OpenAI account linking
+
+The hosted server implements OAuth 2.1 authorization-code flow with PKCE.
+
+Discovery endpoints:
+
+```text
+/.well-known/oauth-protected-resource
+/.well-known/oauth-authorization-server
+```
+
+When ChatGPT connects to `/api/mcp`, authenticated YesWeHack tools advertise the `yeswehack` OAuth scope. ChatGPT opens this server's authorization page. Paste a YesWeHack Personal Access Token (recommended) or a current YesWeHack bearer token there.
+
+The server verifies the credential directly against `https://api.yeswehack.com/user`. The YesWeHack token is stored server-side in Vercel Runtime Cache for the OAuth grant. ChatGPT receives only opaque MCP access/refresh tokens.
+
+The implementation includes:
+
+- Streamable HTTP MCP transport on `/api/mcp`
+- OAuth 2.1 authorization-code flow
+- PKCE S256
+- ChatGPT client ID metadata support
+- ChatGPT connector redirect URI support
+- RFC 8707 resource binding
+- OAuth access-token expiry
+- Refresh-token rotation
+- Vercel Runtime Cache for OAuth grants
+- Optional `YWH_PAT` / `YWH_TOKEN` deployment credentials
+- Direct `X-YWH-Token` / `X-AUTH-TOKEN` support for compatible non-ChatGPT clients
+
+## Tools
+
+- `get_current_user`
+- `list_programs`
+- `get_program`
+- `list_reports`
+- `get_report`
+- `list_report_comments`
+- `list_email_aliases`
+- `get_program_credentials`
+- `request_program_credentials`
+- `yeswehack_api_get`
+- `get_hacktivity`
+
+## Deploy to Vercel
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FNightVibes33%2Fyeswehack-mcp&project-name=yeswehack-mcp&repository-name=yeswehack-mcp)
+
+The app uses Next.js + `mcp-handler` and pins functions to `iad1` so the OAuth handlers and MCP transport share the same Vercel Runtime Cache region.
+
+No YesWeHack secret belongs in GitHub.
+
+## Optional private/single-account deployment
+
+Instead of interactive account linking, a private deployment can set one of these encrypted Vercel environment variables:
+
+```text
+YWH_PAT=...
+YWH_TOKEN=...
+```
+
+`YWH_PAT` is preferred for a long-lived YesWeHack Personal Access Token.
+
+## Local development
 
 ```bash
-export YWH_TOKEN="eyJ..."       # browser/API bearer token
-export YWH_PAT="ywh_pat_..."    # Personal Access Token
+npm install
+npm run dev
 ```
 
-### Available tools
-
-| Tool | Description |
-|------|-------------|
-| `authenticate` | Browser login, API login, or store a copied bearer token/PAT |
-| `get_current_user` | Show your YesWeHack profile (username, rank, reputation) |
-| `list_programs` | List all programs you have access to, including private invite-only ones |
-| `get_program` | Full details for a program: scope, reward ranges, status |
-| `list_reports` | List reports for a program, with optional status filter |
-| `get_report` | Full details of a specific report (title, severity, CVSS, description, bounty) |
-| `list_report_comments` | List comments/messages for a report when your token has access |
-| `list_email_aliases` | List your YesWeHack email aliases |
-| `get_program_credentials` | List credential pools and assigned credentials for a program |
-| `request_program_credentials` | Request credentials from a program credential pool |
-| `yeswehack_api_get` | Read-only escape hatch for authenticated API endpoints not wrapped yet |
-| `get_hacktivity` | Browse the public hacktivity (disclosed reports) feed |
-
-### Example prompts
-
-```
-List all my private programs on YesWeHack.
-
-Show me the scope for the program with slug "acme-corp".
-
-List my YesWeHack email aliases.
-
-Get credentials for program "acme-corp".
-
-List all accepted reports for program "acme-corp".
-
-Get the full details of report 12345.
-
-Show me the latest hacktivity, page 2.
-```
-
-## Token storage
-
-The token is saved to `~/.config/yeswehack-mcp/token.json`. It contains only the token and its expiry timestamp — no account password is ever stored. Browser/API session JWTs use their embedded expiry. Opaque Personal Access Tokens are cached locally until the YesWeHack API rejects them. The browser profile (cookies, localStorage) is kept at `~/.config/yeswehack-mcp/browser-profile` so you do not have to fill in your email every time you re-authenticate.
-
-To log out, delete the token file:
+For local single-account testing:
 
 ```bash
-rm ~/.config/yeswehack-mcp/token.json
+export YWH_PAT="your-token"
+npm run dev
 ```
 
-## Project structure
+Then connect an MCP client to:
 
-```
-yeswehack-mcp/
-├── server.py        # FastMCP entry point — all tool definitions
-├── auth.py          # Playwright browser login + token storage
-├── client.py        # httpx async API wrapper with pagination
-└── pyproject.toml   # Dependencies and build config
+```text
+http://localhost:3000/api/mcp
 ```
 
-## WSL2 display setup
+## Security
 
-Playwright needs a display to open the browser window. On WSL2 with WSLg this works out of the box. If you see an error about `DISPLAY` not being set:
+- YesWeHack credentials are never committed to the repository.
+- OAuth authorization codes are short-lived and single-use.
+- MCP access tokens and refresh tokens are opaque random values.
+- Refresh tokens rotate on use.
+- OAuth tokens are bound to the MCP resource and ChatGPT client ID.
+- Authorization pages and token responses use `no-store`.
+- The arbitrary API escape hatch is GET-only and accepts only relative YesWeHack API paths.
 
-```bash
-# Check if WSLg is running
-echo $DISPLAY        # should print something like :0
-ls /mnt/wslg        # should exist
+## Legacy
 
-# If not, ensure you are on a recent WSL2 version with WSLg support
-wsl --update         # run from Windows PowerShell
-```
-
-## License
-
-MIT
+The original fork was a local Python/stdio MCP. This branch replaces that deployment path with a Vercel-first, OpenAI/ChatGPT-compatible remote MCP architecture.
