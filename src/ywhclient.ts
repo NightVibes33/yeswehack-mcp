@@ -150,7 +150,7 @@ export async function listReports(input: {
   all_pages?: boolean;
 }) {
   const path = "/programs/" + encodeURIComponent(input.program_slug) + "/reports";
-  const extra = input.status ? { status: input.status } : {};
+  const extra: Record<string, string> = input.status ? { status: input.status } : {};
   if (input.all_pages) return allPages(path, extra);
   const data = await apiRequest("GET", path, {
     params: { ...extra, page: input.page || 1 },
