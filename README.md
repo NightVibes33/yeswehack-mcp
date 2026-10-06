@@ -4,154 +4,122 @@ Unofficial ChatGPT-compatible remote MCP server for the YesWeHack bug bounty pla
 
 ## Production
 
-The deployed server is:
+MCP: https://yeswehackmcp.vercel.app/api/mcp
 
-```text
-https://yeswehackmcp.vercel.app
-```
+Health: https://yeswehackmcp.vercel.app/api/health
 
-MCP transport:
+## Real YesWeHack account linking
 
-```text
-https://yeswehackmcp.vercel.app/api/mcp
-```
+The ChatGPT connection no longer imitates a YesWeHack email/password form and does not ask the user for a password, TOTP code, passkey, PAT, or raw bearer token.
 
-Health:
+The browser flow is:
 
-```text
-https://yeswehackmcp.vercel.app/api/health
-```
+ChatGPT -> this MCP's OAuth authorize route -> official YesWeHack OAuth authorization page -> this MCP's callback -> ChatGPT OAuth callback.
 
-## ChatGPT / OpenAI account linking
+YesWeHack therefore owns the actual account login ceremony, including passkeys and 2FA. The MCP acts as an OAuth broker: ChatGPT receives opaque MCP credentials while the resulting YesWeHack access/refresh credentials remain server-side in Vercel Runtime Cache.
 
-The hosted server implements OAuth 2.1 authorization-code flow with PKCE and is designed to be registered as a ChatGPT App.
+### Required YesWeHack API App configuration
 
-Discovery endpoints:
+YesWeHack must enable API Apps access for the researcher account. Create a YesWeHack API App and register this redirect URI:
 
-```text
-/.well-known/oauth-protected-resource
-/.well-known/oauth-authorization-server
-```
+https://yeswehackmcp.vercel.app/oauth/callback
 
-For a normal YesWeHack hunter account, no YesWeHack Personal Access Token is required. During the connection flow, the hosted authorization page accepts the researcher's normal YesWeHack email/password and optional current 2FA/TOTP code, sends those credentials to YesWeHack's `/login` API only for the login exchange, and keeps only the resulting YesWeHack session token server-side for the OAuth grant. The password and one-time code are not stored and are not returned to ChatGPT.
+Configure these Vercel environment variables:
 
-ChatGPT receives opaque MCP OAuth access/refresh tokens.
+- YWH_OAUTH_CLIENT_ID
+- YWH_OAUTH_CLIENT_SECRET
+
+Optional overrides:
+
+- YWH_OAUTH_REDIRECT_URI
+- YWH_OAUTH_AUTHORIZE_URL
+- YWH_OAUTH_TOKEN_URL
+
+If YesWeHack support supplies an additional per-request header/value, configure it as:
+
+- YWH_APPS_HEADER_NAME
+- YWH_APPS_HEADER_VALUE
+
+Do not commit any client secret or support-provided value.
+
+Legacy YWH_PAT / YWH_TOKEN and direct X-YWH-Token / X-AUTH-TOKEN modes remain available for compatible private or non-ChatGPT clients. They are not used by normal ChatGPT account linking.
+
+## OAuth discovery
+
+- /.well-known/oauth-protected-resource
+- /.well-known/oauth-protected-resource/api/mcp
+- /.well-known/oauth-authorization-server
 
 The implementation includes:
 
-- Streamable HTTP MCP transport on `/api/mcp`
-- OAuth 2.1 authorization-code flow
-- PKCE S256
-- ChatGPT OAuth discovery metadata
-- ChatGPT client ID / redirect handling
+- Streamable HTTP MCP transport on /api/mcp
+- ChatGPT-facing authorization-code flow with PKCE S256
 - RFC 8707 resource binding
-- OAuth access-token expiry
-- Refresh-token rotation
-- Vercel Runtime Cache for OAuth grants
-- Hunter login + optional 2FA exchange
-- Optional `YWH_PAT` / `YWH_TOKEN` for private/server-managed deployments
-- Direct `X-YWH-Token` / `X-AUTH-TOKEN` support for compatible non-ChatGPT clients
+- Official YesWeHack authorization-code exchange
+- Upstream refresh-token handling
+- Short-lived, single-use state and authorization codes
+- Opaque MCP access/refresh tokens
+- No password/TOTP/passkey collection by this server
 
-## Current MCP tools
+## Researcher API routing
 
-- `get_current_user`
-- `list_programs`
-- `get_program`
-- `list_reports`
-- `get_report`
-- `list_report_comments`
-- `list_email_aliases`
-- `get_program_credentials`
-- `request_program_credentials`
-- `yeswehack_api_get`
-- `get_hacktivity`
+For linked API App accounts the MCP uses https://apps.yeswehack.com and researcher-facing endpoints:
 
-Only API operations whose YesWeHack request shape has been verified are exposed. The server does not invent write endpoints.
+- current user: /user
+- accessible researcher programs: /v2/hunter/access/programs/{type}
+- researcher reports: /v2/hunter/reports
+- report detail: /reports/{id}
+- report activity/logs: /reports/{id}/logs
+- email aliases: /user/email-aliases
+- program credentials: /programs/{slug}/hunter/credentials
 
-## Mobile ChatGPT architecture
+The MCP does not guess undocumented mutations. The existing credential-request helper is limited to legacy direct-token mode; API App sessions fail closed instead of posting to an invented endpoint.
 
-The mobile package intentionally follows the same architecture used by the working HackerOne mobile plugin:
+## MCP tools
 
-```text
-ChatGPT mobile plugin
-        |
-        v
-.app.json -> registered ChatGPT App (asdk_app_...)
-        |
-        v
-https://yeswehackmcp.vercel.app/api/mcp
-        |
-        v
-YesWeHack API
-```
+- get_current_user
+- list_programs
+- get_program
+- list_reports
+- get_report
+- list_report_comments
+- list_email_aliases
+- get_program_credentials
+- request_program_credentials (legacy direct-token mode only)
+- yeswehack_api_get
+- get_hacktivity
 
-The final mobile plugin **does not embed the MCP URL in `mcp.json`**. Its `mcp.json` and `.mcp.json` are empty and `.app.json` requires the registered ChatGPT App ID. This is what gives the plugin the native registered-app connection layer instead of behaving like a raw desktop MCP wrapper.
+## ChatGPT mobile package
 
-### Register the ChatGPT App
+Register a ChatGPT App in Developer Mode with:
 
-In ChatGPT Developer Mode, create an app using:
+- Name: YesWeHack
+- MCP URL: https://yeswehackmcp.vercel.app/api/mcp
+- Authentication: OAuth
 
-```text
-Name: YesWeHack
-MCP URL: https://yeswehackmcp.vercel.app/api/mcp
-Authentication: OAuth
-```
+Then package the registered app wrapper with:
 
-Scan the MCP tools, complete the YesWeHack account-link flow, then create the app. ChatGPT will generate an ID beginning with `asdk_app_`.
-
-The raw `asdk_app_...` value is the value used inside `.app.json`. Do not put a `plugin_` prefix inside the manifest.
-
-### Build the exact mobile wrapper
-
-Once the registered app ID exists:
-
-```bash
 npm run package:mobile -- asdk_app_YOUR_GENERATED_ID
-```
 
-This creates:
-
-```text
-dist/yeswehack-app-mobile/
-  .app.json
-  .mcp.json
-  mcp.json
-  plugin.json
-  .codex-plugin/plugin.json
-  skills/yeswehack-workflow/SKILL.md
-```
-
-The package is App-SDK-only and mirrors the working HackerOne mobile wrapper layout.
-
-A GitHub Actions workflow named **Package Mobile Plugin** is also included. Run it manually with the generated `asdk_app_...` ID to receive `yeswehack-app-mobile.zip` as an artifact.
+The mobile package keeps mcp.json and .mcp.json empty and points .app.json at the registered ChatGPT App ID, matching the working registered-App architecture.
 
 ## Local development
 
-```bash
+Install and build:
+
 npm install
-npm run dev
-```
+npm run build
 
-For a private single-account test deployment:
+For a private legacy-token test:
 
-```bash
-export YWH_TOKEN="your-existing-token"
-npm run dev
-```
-
-Then connect an MCP client to:
-
-```text
-http://localhost:3000/api/mcp
-```
+YWH_TOKEN=your-existing-token npm run dev
 
 ## Security
 
-- YesWeHack passwords and 2FA codes are not committed or persisted by the login flow.
-- YesWeHack session credentials are never committed to the repository.
+- Upstream YesWeHack credentials never pass through the model.
+- The MCP never receives a YesWeHack password, TOTP secret/code, or passkey in the normal connection flow.
+- PKCE S256 is mandatory for ChatGPT account linking.
 - OAuth authorization codes are short-lived and single-use.
-- MCP access and refresh tokens are opaque random values.
 - Refresh tokens rotate on use.
-- OAuth grants are resource-bound.
-- Authorization pages and token responses use `no-store`.
-- The arbitrary API escape hatch remains GET-only and accepts only relative YesWeHack API paths.
+- Grants are bound to the MCP resource.
+- The arbitrary API escape hatch remains GET-only and accepts only relative API paths.
