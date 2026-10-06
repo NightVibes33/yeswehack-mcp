@@ -1,14 +1,27 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getCache } from "@vercel/functions";
-import { verifyYesWeHackToken } from "./ywhclient";
+import {
+  YWH_APPS_API_BASE,
+  expiresAtFromTokenResponse,
+  refreshYesWeHackAccessToken,
+  yesWeHackOAuthRedirectUri,
+} from "./ywh-oauth";
 
 function defaultIssuer() {
   const explicit = process.env.OAUTH_ISSUER?.trim();
   if (explicit) return explicit.replace(/\/$/, "");
   const production = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
-  if (production) return "https://" + production.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (production)
+    return (
+      "https://" +
+      production.replace(/^https?:\/\//, "").replace(/\/$/, "")
+    );
   const deployment = process.env.VERCEL_URL?.trim();
-  if (deployment) return "https://" + deployment.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (deployment)
+    return (
+      "https://" +
+      deployment.replace(/^https?:\/\//, "").replace(/\/$/, "")
+    );
   return "http://localhost:3000";
 }
 
@@ -21,22 +34,38 @@ export const OAUTH_SCOPE = "yeswehack";
 export const OFFLINE_SCOPE = "offline_access";
 
 const AUTH_CODE_TTL = 5 * 60;
+const UPSTREAM_STATE_TTL = 10 * 60;
 const ACCESS_TOKEN_TTL = 60 * 60;
 const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60;
 
 export type OAuthGrant = {
   token: string;
+  upstreamRefreshToken?: string | null;
+  upstreamExpiresAt?: number | null;
   username?: string | null;
   email?: string | null;
   clientId: string;
   resource: string;
   scope: string;
+  apiBase?: string;
+  authMode?: "bearer" | "legacy";
 };
 
 export type AuthorizationCodeRecord = OAuthGrant & {
   redirectUri: string;
   codeChallenge: string;
 };
+
+export type UpstreamAuthorizationRecord = {
+  clientId: string;
+  redirectUri: string;
+  resource: string;
+  scope: string;
+  codeChallenge: string;
+  clientState: string;
+};
+
+type TokenKind = "code" | "access" | "refresh" | "upstream";
 
 function oauthCache() {
   return getCache({
@@ -45,7 +74,7 @@ function oauthCache() {
   });
 }
 
-function tokenKey(kind: "code" | "access" | "refresh", token: string) {
+function tokenKey(kind: TokenKind, token: string) {
   const digest = createHash("sha256").update(token, "utf8").digest("hex");
   return kind + ":" + digest;
 }
@@ -55,7 +84,7 @@ function opaqueToken(prefix: string) {
 }
 
 async function putRecord(
-  kind: "code" | "access" | "refresh",
+  kind: TokenKind,
   ttl: number,
   value: object
 ) {
@@ -68,14 +97,28 @@ async function putRecord(
   return token;
 }
 
-async function getRecord<T>(
-  kind: "code" | "access" | "refresh",
-  token: string
-): Promise<T> {
+async function getRecord<T>(kind: TokenKind, token: string): Promise<T> {
   if (!token || token.length < 20) throw new Error("Malformed OAuth token.");
-  const value = (await oauthCache().get(tokenKey(kind, token))) as T | undefined;
-  if (!value) throw new Error("OAuth token is invalid, expired, or no longer active.");
+  const value = (await oauthCache().get(tokenKey(kind, token))) as
+    | T
+    | undefined;
+  if (!value)
+    throw new Error("OAuth token is invalid, expired, or no longer active.");
   return value;
+}
+
+export async function createUpstreamAuthorizationState(
+  input: UpstreamAuthorizationRecord
+) {
+  return putRecord("upstream", UPSTREAM_STATE_TTL, input);
+}
+
+export async function readUpstreamAuthorizationState(state: string) {
+  return getRecord<UpstreamAuthorizationRecord>("upstream", state);
+}
+
+export async function consumeUpstreamAuthorizationState(state: string) {
+  await oauthCache().delete(tokenKey("upstream", state));
 }
 
 export async function createAuthorizationCode(input: AuthorizationCodeRecord) {
@@ -90,8 +133,16 @@ export async function consumeAuthorizationCode(code: string) {
   await oauthCache().delete(tokenKey("code", code));
 }
 
+export function accessTokenExpiresIn(input: OAuthGrant) {
+  if (!input.upstreamExpiresAt) return ACCESS_TOKEN_TTL;
+  const upstreamRemaining = Math.floor(
+    (input.upstreamExpiresAt - Date.now()) / 1000
+  );
+  return Math.max(60, Math.min(ACCESS_TOKEN_TTL, upstreamRemaining - 30));
+}
+
 export async function createAccessToken(input: OAuthGrant) {
-  return putRecord("access", ACCESS_TOKEN_TTL, input);
+  return putRecord("access", accessTokenExpiresIn(input), input);
 }
 
 export async function resolveAccessToken(token: string) {
@@ -102,7 +153,19 @@ export async function resolveAccessToken(token: string) {
   if (!payload.scope.split(/\s+/).includes(OAUTH_SCOPE)) {
     throw new Error("OAuth token does not include the required YesWeHack scope.");
   }
-  return { token: payload.token };
+  if (
+    payload.upstreamExpiresAt &&
+    payload.upstreamExpiresAt <= Date.now() + 15_000
+  ) {
+    throw new Error(
+      "The linked YesWeHack access token has expired. Refresh or reconnect the account."
+    );
+  }
+  return {
+    token: payload.token,
+    apiBase: payload.apiBase || YWH_APPS_API_BASE,
+    authMode: payload.authMode || ("bearer" as const),
+  };
 }
 
 export async function createRefreshToken(input: OAuthGrant) {
@@ -115,6 +178,37 @@ export async function readRefreshToken(token: string) {
 
 export async function consumeRefreshToken(token: string) {
   await oauthCache().delete(tokenKey("refresh", token));
+}
+
+export async function refreshUpstreamGrant(
+  payload: OAuthGrant
+): Promise<OAuthGrant> {
+  if (payload.authMode !== "bearer" || !payload.upstreamRefreshToken) {
+    if (
+      payload.upstreamExpiresAt &&
+      payload.upstreamExpiresAt <= Date.now() + 15_000
+    ) {
+      throw new Error(
+        "The linked YesWeHack session expired and cannot be refreshed. Reconnect the account."
+      );
+    }
+    return payload;
+  }
+
+  const refreshed = await refreshYesWeHackAccessToken(
+    payload.upstreamRefreshToken,
+    yesWeHackOAuthRedirectUri(OAUTH_ISSUER)
+  );
+
+  return {
+    ...payload,
+    token: refreshed.access_token,
+    upstreamRefreshToken:
+      refreshed.refresh_token || payload.upstreamRefreshToken,
+    upstreamExpiresAt: expiresAtFromTokenResponse(refreshed.expires_in),
+    apiBase: YWH_APPS_API_BASE,
+    authMode: "bearer",
+  };
 }
 
 export function verifyPkce(verifier: string, challenge: string) {
@@ -134,13 +228,17 @@ export function normalizeScope(scope?: string | null) {
       .filter(Boolean)
   );
   requested.add(OAUTH_SCOPE);
-  return [OAUTH_SCOPE, ...(requested.has(OFFLINE_SCOPE) ? [OFFLINE_SCOPE] : [])].join(" ");
+  return [
+    OAUTH_SCOPE,
+    ...(requested.has(OFFLINE_SCOPE) ? [OFFLINE_SCOPE] : []),
+  ].join(" ");
 }
 
 export function isAllowedClientId(clientId: string) {
   try {
     const url = new URL(clientId);
-    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com") return false;
+    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com")
+      return false;
     return (
       url.pathname === "/oauth/client.json" ||
       /^\/oauth\/[^/]+\/client\.json$/.test(url.pathname)
@@ -153,7 +251,8 @@ export function isAllowedClientId(clientId: string) {
 export function isAllowedRedirectUri(redirectUri: string) {
   try {
     const url = new URL(redirectUri);
-    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com") return false;
+    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com")
+      return false;
     return (
       url.pathname === "/connector_platform_oauth_redirect" ||
       /^\/connector\/oauth\/[^/]+$/.test(url.pathname)
@@ -161,10 +260,6 @@ export function isAllowedRedirectUri(redirectUri: string) {
   } catch {
     return false;
   }
-}
-
-export async function verifyCredential(token: string) {
-  return verifyYesWeHackToken(token.trim());
 }
 
 export function protectedResourceMetadata() {

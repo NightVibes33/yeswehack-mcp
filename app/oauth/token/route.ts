@@ -1,5 +1,6 @@
 import {
   OAUTH_RESOURCE,
+  accessTokenExpiresIn,
   consumeAuthorizationCode,
   consumeRefreshToken,
   createAccessToken,
@@ -8,6 +9,7 @@ import {
   isAllowedRedirectUri,
   readAuthorizationCode,
   readRefreshToken,
+  refreshUpstreamGrant,
   verifyPkce,
 } from "../../../src/oauth";
 
@@ -43,7 +45,10 @@ export async function POST(request: Request) {
     const redirectUri = String(form.get("redirect_uri") || "");
 
     if (!code || !verifier) {
-      return oauthError("invalid_request", "code and code_verifier are required.");
+      return oauthError(
+        "invalid_request",
+        "code and code_verifier are required."
+      );
     }
     if (!isAllowedRedirectUri(redirectUri)) {
       return oauthError("invalid_grant", "Redirect URI is not allowed.");
@@ -52,13 +57,22 @@ export async function POST(request: Request) {
     try {
       const payload = await readAuthorizationCode(code);
       if (payload.clientId !== clientId) {
-        return oauthError("invalid_grant", "client_id does not match the authorization code.");
+        return oauthError(
+          "invalid_grant",
+          "client_id does not match the authorization code."
+        );
       }
       if (payload.redirectUri !== redirectUri) {
-        return oauthError("invalid_grant", "redirect_uri does not match the authorization code.");
+        return oauthError(
+          "invalid_grant",
+          "redirect_uri does not match the authorization code."
+        );
       }
       if (payload.resource !== OAUTH_RESOURCE || resource !== payload.resource) {
-        return oauthError("invalid_target", "resource does not match the protected MCP resource.");
+        return oauthError(
+          "invalid_target",
+          "resource does not match the protected MCP resource."
+        );
       }
       if (!verifyPkce(verifier, payload.codeChallenge)) {
         return oauthError("invalid_grant", "PKCE verification failed.");
@@ -68,11 +82,15 @@ export async function POST(request: Request) {
 
       const common = {
         token: payload.token,
+        upstreamRefreshToken: payload.upstreamRefreshToken,
+        upstreamExpiresAt: payload.upstreamExpiresAt,
         username: payload.username,
         email: payload.email,
         clientId: payload.clientId,
         resource: payload.resource,
         scope: payload.scope,
+        apiBase: payload.apiBase,
+        authMode: payload.authMode,
       };
 
       const [accessToken, refreshToken] = await Promise.all([
@@ -84,7 +102,7 @@ export async function POST(request: Request) {
         {
           access_token: accessToken,
           token_type: "Bearer",
-          expires_in: 3600,
+          expires_in: accessTokenExpiresIn(common),
           refresh_token: refreshToken,
           scope: payload.scope,
         },
@@ -96,7 +114,10 @@ export async function POST(request: Request) {
         }
       );
     } catch (error: any) {
-      return oauthError("invalid_grant", error?.message || "Invalid authorization code.");
+      return oauthError(
+        "invalid_grant",
+        error?.message || "Invalid authorization code."
+      );
     }
   }
 
@@ -109,25 +130,36 @@ export async function POST(request: Request) {
     try {
       const payload = await readRefreshToken(refreshToken);
       if (payload.clientId !== clientId) {
-        return oauthError("invalid_grant", "client_id does not match the refresh token.");
+        return oauthError(
+          "invalid_grant",
+          "client_id does not match the refresh token."
+        );
       }
-      if (payload.resource !== OAUTH_RESOURCE || (resource && resource !== payload.resource)) {
-        return oauthError("invalid_target", "resource does not match the protected MCP resource.");
+      if (
+        payload.resource !== OAUTH_RESOURCE ||
+        (resource && resource !== payload.resource)
+      ) {
+        return oauthError(
+          "invalid_target",
+          "resource does not match the protected MCP resource."
+        );
       }
 
+      const refreshedPayload = await refreshUpstreamGrant(payload);
       await consumeRefreshToken(refreshToken);
+
       const [accessToken, nextRefreshToken] = await Promise.all([
-        createAccessToken(payload),
-        createRefreshToken(payload),
+        createAccessToken(refreshedPayload),
+        createRefreshToken(refreshedPayload),
       ]);
 
       return Response.json(
         {
           access_token: accessToken,
           token_type: "Bearer",
-          expires_in: 3600,
+          expires_in: accessTokenExpiresIn(refreshedPayload),
           refresh_token: nextRefreshToken,
-          scope: payload.scope,
+          scope: refreshedPayload.scope,
         },
         {
           headers: {
@@ -137,9 +169,15 @@ export async function POST(request: Request) {
         }
       );
     } catch (error: any) {
-      return oauthError("invalid_grant", error?.message || "Invalid refresh token.");
+      return oauthError(
+        "invalid_grant",
+        error?.message || "Invalid refresh token."
+      );
     }
   }
 
-  return oauthError("unsupported_grant_type", "Use authorization_code or refresh_token.");
+  return oauthError(
+    "unsupported_grant_type",
+    "Use authorization_code or refresh_token."
+  );
 }

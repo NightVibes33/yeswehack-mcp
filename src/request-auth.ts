@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface YesWeHackCredentials {
   token: string;
+  apiBase?: string;
+  authMode?: "bearer" | "legacy";
 }
 
 const credentialsStorage = new AsyncLocalStorage<YesWeHackCredentials>();

@@ -32,10 +32,11 @@ export default function Home() {
           /api/mcp
         </pre>
         <p style={{ lineHeight: 1.7, color: "#bdbdbd" }}>
-          Authentication uses OAuth 2.1 authorization code + PKCE. During account
-          linking you provide a YesWeHack Personal Access Token or bearer token.
-          The YesWeHack credential stays server-side in Vercel Runtime Cache;
-          ChatGPT receives only an opaque MCP OAuth token.
+          Account linking now brokers ChatGPT OAuth to YesWeHack&apos;s official
+          OAuth authorization-code flow. The browser is redirected to the real
+          YesWeHack authorization page, so YesWeHack handles passkeys, 2FA, and
+          account authentication directly. This server never asks for or stores
+          your YesWeHack password or passkey.
         </p>
         <p style={{ lineHeight: 1.7, color: "#777" }}>
           <a href="/.well-known/oauth-protected-resource" style={{ color: "#60a5fa" }}>
